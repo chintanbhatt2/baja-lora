@@ -15,6 +15,7 @@ use teensy4_panic as _;
 
 #[rtic::app(device = teensy4_bsp, peripherals = true, dispatchers = [KPP])]
 mod app {
+    use bsp::{hal::gpio::Output, pins::t40::*};
     use sx127x_lora::LoRa;
     use teensy4_bsp::{self as bsp, board, hal::{gpio::Output, gpt::{self, Gpt}, timer::Blocking}, pins::common};
 
@@ -31,8 +32,8 @@ mod app {
     struct Shared {
         lora: LoRa<
                 board::Lpspi4,
-                bsp::hal::gpio::Output<bsp::pins::t40::P9>,
-                bsp::hal::gpio::Output<bsp::pins::t40::P6>,
+                Output<P9>,
+                Output<P6>,
                 Blocking<Gpt<1>, GPT_FREQUENCY>,
             >,
     }
@@ -40,7 +41,7 @@ mod app {
     /// These resources are local to individual tasks.
     #[local]
     struct Local {
-        /// The LED on pin 13.
+        /// The LED on pin 1.
         led: Output<common::P1>,
         /// A poller to control USB logging.
         poller: logging::Poller,
@@ -73,6 +74,9 @@ mod app {
         let led = gpio1.output(pins.p1);
         let poller = logging::log::usbd(usb, logging::Interrupts::Enabled).unwrap();
 
+
+        // The LPSPI instance takes pins 10, 11, 12, and 13
+        // This means that pin 10 cannot be connected to the LoRa CS pin
         let lpspi4: board::Lpspi4 = board::lpspi(
             lpspi4,
             board::LpspiPins {
@@ -85,6 +89,8 @@ mod app {
         );
 
         init_gpt(&mut gpt1);
+
+        // These pins are the ones set up for the lora module
         let reset = gpio2.output(pins.p6);
         let cs = gpio2.output(pins.p9);
 
@@ -98,6 +104,8 @@ mod app {
             rtic_monotonics::create_systick_token!(),
         );
         
+
+        // Spawn tasks
         blink::spawn().unwrap();
         transmit_radio::spawn().unwrap();
         listen_radio::spawn().unwrap();
@@ -105,6 +113,9 @@ mod app {
         (Shared {lora }, Local { led, poller })
     }
 
+
+    // Keeping this in as sort of a debug function
+    // that can also be used as a reference
     #[task(priority=10,local = [led])]
     async fn blink(cx: blink::Context) {
         let mut count = 0u32;
@@ -113,10 +124,10 @@ mod app {
             Systick::delay(500.millis()).await;
 
             // log::info!("Hello from your Teensy 4! The count is {count}");
-            if count.is_multiple_of(7) {
+            if count % 7 == 0 {
                 // log::warn!("Here's a warning at count {count}");
             }
-            if count.is_multiple_of(23) {
+            if count % 23 == 0 {
                 // log::error!("Here's an error at count {count}");
             }
 
@@ -124,6 +135,7 @@ mod app {
         }
     }
 
+    // Creates the USB serial poller to connect to a monitor
     #[task(binds = USB_OTG1, local = [poller])]
     fn log_over_usb(cx: log_over_usb::Context) {
         cx.local.poller.poll();
@@ -132,6 +144,10 @@ mod app {
     #[task(priority=10,shared = [lora])]
     async fn transmit_radio(mut cx: transmit_radio::Context) {
         loop {
+
+            // The lora object is shared and thus needs to be locked
+            // The rest of the syntax in the lock function is a lambda 
+            // that will execute an arbitrary message send
             cx.shared
                 .lora
                 .lock(|lora| {
@@ -173,7 +189,7 @@ mod app {
                     },
                     Err(err) => {
                         match err {
-                            sx127x_lora::Error::Uninformative => {},
+                            sx127x_lora::Error::Uninformative => {}, // This is for when nothing happens, so just ignore it
                             sx127x_lora::Error::VersionMismatch(v) => log::error!("Version mismatch: {}", v),
                             sx127x_lora::Error::CS(c) => log::error!("Chip select error: {}", c),
                             sx127x_lora::Error::Reset(r) => log::error!("Reset error: {}", r),
