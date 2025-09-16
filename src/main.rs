@@ -15,7 +15,7 @@ use teensy4_panic as _;
 
 #[rtic::app(device = teensy4_bsp, peripherals = true, dispatchers = [KPP])]
 mod app {
-    use bsp::{hal::gpio::Output, pins::t40::*};
+    use bsp::pins::t40::*;
     use sx127x_lora::LoRa;
     use teensy4_bsp::{self as bsp, board, hal::{gpio::Output, gpt::{self, Gpt}, timer::Blocking}, pins::common};
 
