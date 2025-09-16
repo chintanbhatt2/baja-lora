@@ -13,40 +13,35 @@
 
 use teensy4_panic as _;
 
-#[rtic::app(device = teensy4_bsp, peripherals = true, dispatchers = [KPP, PIT])]
+#[rtic::app(device = teensy4_bsp, peripherals = true, dispatchers = [KPP])]
 mod app {
-
-    use bsp::hal::gpt;
-    use imxrt_log as logging;
     use sx127x_lora::LoRa;
-    use teensy4_bsp::{
-        self as bsp, board,
-        hal::{gpt::Gpt, timer::Blocking},
-    };
+    use teensy4_bsp::{self as bsp, board, hal::{gpio::Output, gpt::{self, Gpt}, iomuxc::Pad, lpspi::Lpspi, timer::Blocking}, pins::common};
+
+    use imxrt_log as logging;
 
     // If you're using a Teensy 4.1 or MicroMod, you should eventually
     // change 't40' to 't41' or micromod, respectively.
     use board::t40 as my_board;
 
-    use rtic_monotonics::systick::{Systick, *};
+    use rtic_monotonics::systick::{fugit::Duration, Systick, *};
 
-    /// There resources are shared across tasks.
+    /// There are no resources shared across tasks.
     #[shared]
     struct Shared {
-        // The lora module
         lora: LoRa<
-            board::Lpspi4,
-            bsp::hal::gpio::Output<bsp::pins::t40::P0>,
-            bsp::hal::gpio::Output<bsp::pins::t40::P1>,
-            Blocking<Gpt<1>, GPT_FREQUENCY>,
-        >,
+                board::Lpspi4,
+                bsp::hal::gpio::Output<bsp::pins::t40::P9>,
+                bsp::hal::gpio::Output<bsp::pins::t40::P6>,
+                Blocking<Gpt<1>, GPT_FREQUENCY>,
+            >,
     }
 
     /// These resources are local to individual tasks.
     #[local]
     struct Local {
         /// The LED on pin 13.
-        led: board::Led,
+        led: Output<common::P1>,
         /// A poller to control USB logging.
         poller: logging::Poller,
     }
@@ -67,18 +62,17 @@ mod app {
     fn init(cx: init::Context) -> (Shared, Local) {
         let board::Resources {
             mut gpio2,
+            mut gpio1,
             pins,
             usb,
+            lpspi4,
             mut gpt1,
-            mut gpio1,
             ..
         } = my_board(cx.device);
 
-        let led = board::led(&mut gpio2, pins.p13);
+        let led = gpio1.output(pins.p1);
+        let poller = logging::log::usbd(usb, logging::Interrupts::Enabled).unwrap();
 
-        let board::T40Resources { lpspi4, pins, .. } = board::t40(board::instances());
-
-        // Set up the LPSPI4 peripheral with 1 MHz clock
         let lpspi4: board::Lpspi4 = board::lpspi(
             lpspi4,
             board::LpspiPins {
@@ -90,36 +84,52 @@ mod app {
             1_000_000,
         );
 
-        let poller = logging::log::usbd(usb, logging::Interrupts::Enabled).unwrap();
+        init_gpt(&mut gpt1);
+        let reset = gpio2.output(pins.p6);
+        let cs = gpio2.output(pins.p9);
+
+        let delay = Blocking::<_, GPT_FREQUENCY>::from_gpt(gpt1);
+        let lora = LoRa::new(lpspi4, cs, reset, 915, delay).unwrap();
+
 
         Systick::start(
             cx.core.SYST,
             board::ARM_FREQUENCY,
             rtic_monotonics::create_systick_token!(),
         );
-
-        // let cs = board::instances().GPIO1.into();
-
-        //Set the lora pins
-        let cs = gpio1.output(pins.p0);
-        let reset = gpio1.output(pins.p1);
-        // create a gpt timer for delay
-        init_gpt(&mut gpt1);
-
-        // Create a blocking delay using GPT1
-        let delay = Blocking::<_, GPT_FREQUENCY>::from_gpt(gpt1);
-
-        let lora = LoRa::new(lpspi4, cs, reset, 915, delay).unwrap();
-
-        // Async systems
+        
         blink::spawn().unwrap();
         transmit_radio::spawn().unwrap();
         listen_radio::spawn().unwrap();
 
-        (Shared { lora }, Local { led, poller })
+        (Shared {lora }, Local { led, poller })
     }
 
-    #[task(priority = 2, shared = [lora])]
+    #[task(priority=10,local = [led])]
+    async fn blink(cx: blink::Context) {
+        let mut count = 0u32;
+        loop {
+            cx.local.led.toggle();
+            Systick::delay(500.millis()).await;
+
+            // log::info!("Hello from your Teensy 4! The count is {count}");
+            if count % 7 == 0 {
+                // log::warn!("Here's a warning at count {count}");
+            }
+            if count % 23 == 0 {
+                // log::error!("Here's an error at count {count}");
+            }
+
+            count = count.wrapping_add(1);
+        }
+    }
+
+    #[task(binds = USB_OTG1, local = [poller])]
+    fn log_over_usb(cx: log_over_usb::Context) {
+        cx.local.poller.poll();
+    }
+
+    #[task(priority=10,shared = [lora])]
     async fn transmit_radio(mut cx: transmit_radio::Context) {
         loop {
             cx.shared
@@ -147,48 +157,35 @@ mod app {
         }
     }
 
-    #[task(priority = 1, shared = [lora])]
+    #[task(shared = [lora])]
     async fn listen_radio(mut cx: listen_radio::Context) {
         loop {
-            cx.shared.lora.lock(|lora| match lora.poll_irq(None) {
-                Ok(size) => {
-                    if let Ok(buffer) = lora.read_packet() {
-                        if size > 0 {
-                            if let Ok(text) = core::str::from_utf8(&buffer[..size]) {
-                                log::info!("Received message: {:?}", text);
-                            } else {
-                                log::warn!("Received non-UTF8 message: {:?}", &buffer[..size]);
-                            }
+            cx.shared.lora.lock(|lora| {
+                let poll = lora.poll_irq(Some(30));
+                match poll {
+                    Ok(size) => {
+                        log::info!("with payload: ");
+                        if let Ok(buffer) = lora.read_packet(){
+                                let message = core::str::from_utf8(&buffer[..size]).unwrap_or("Invalid UTF-8");
+                                log::info!("{}", message);
                         }
+                        
+                    },
+                    Err(err) => {
+                        match err {
+                            sx127x_lora::Error::Uninformative => {},
+                            sx127x_lora::Error::VersionMismatch(v) => log::error!("Version mismatch: {}", v),
+                            sx127x_lora::Error::CS(c) => log::error!("Chip select error: {}", c),
+                            sx127x_lora::Error::Reset(r) => log::error!("Reset error: {}", r),
+                            sx127x_lora::Error::SPI(_) => log::error!("SPI error"),
+                            sx127x_lora::Error::Transmitting => log::error!("Transmitting error"),
+                        }
+
                     }
                 }
-                Err(_) => unreachable!(),
             });
         }
     }
 
-    #[task(binds = USB_OTG1, local = [poller])]
-    fn log_over_usb(cx: log_over_usb::Context) {
-        cx.local.poller.poll();
-    }
-
-    #[task(local = [led])]
-    async fn blink(cx: blink::Context) {
-        let mut count = 0u32;
-        loop {
-            cx.local.led.toggle();
-
-            Systick::delay(500.millis()).await;
-
-            log::info!("Hello from your Teensy 4! The count is {count}");
-            if count.is_multiple_of(7) {
-                log::warn!("Here's a warning at count {count}");
-            }
-            if count.is_multiple_of(23) {
-                log::error!("Here's an error at count {count}");
-            }
-
-            count = count.wrapping_add(1);
-        }
-    }
 }
+
