@@ -16,7 +16,7 @@ use teensy4_panic as _;
 #[rtic::app(device = teensy4_bsp, peripherals = true, dispatchers = [KPP])]
 mod app {
     use sx127x_lora::LoRa;
-    use teensy4_bsp::{self as bsp, board, hal::{gpio::Output, gpt::{self, Gpt}, iomuxc::Pad, lpspi::Lpspi, timer::Blocking}, pins::common};
+    use teensy4_bsp::{self as bsp, board, hal::{gpio::Output, gpt::{self, Gpt}, timer::Blocking}, pins::common};
 
     use imxrt_log as logging;
 
@@ -24,7 +24,7 @@ mod app {
     // change 't40' to 't41' or micromod, respectively.
     use board::t40 as my_board;
 
-    use rtic_monotonics::systick::{fugit::Duration, Systick, *};
+    use rtic_monotonics::systick::{Systick, *};
 
     /// There are no resources shared across tasks.
     #[shared]
@@ -113,10 +113,10 @@ mod app {
             Systick::delay(500.millis()).await;
 
             // log::info!("Hello from your Teensy 4! The count is {count}");
-            if count % 7 == 0 {
+            if count.is_multiple_of(7) {
                 // log::warn!("Here's a warning at count {count}");
             }
-            if count % 23 == 0 {
+            if count.is_multiple_of(23) {
                 // log::error!("Here's an error at count {count}");
             }
 
