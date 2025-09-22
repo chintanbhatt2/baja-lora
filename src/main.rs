@@ -23,7 +23,7 @@ mod app {
         self as bsp,
         board::{self},
         hal::{
-            gpio::{Input, Output},
+            gpio::Output,
             gpt::{self, Gpt},
             timer::Blocking,
         },
@@ -84,7 +84,7 @@ mod app {
 
         let poller_connection = logging::log::usbd(usb, logging::Interrupts::Enabled);
 
-        let poller: Option<Poller>;
+        
         // if let Err(e) = poller_connection {
         //     log::error!("Failed to set up USB logging: {:?}", e);
         //     let led = board::led(&mut gpio2, pins.p13);
@@ -101,7 +101,7 @@ mod app {
         //         },
         //     );
         // } else {
-            poller = Some(poller_connection.unwrap());
+            let poller: Option<Poller> = Some(poller_connection.unwrap());
         // }
 
         // set up the can bus
@@ -158,10 +158,10 @@ mod app {
                 Systick::delay(500.millis()).await;
 
                 // log::info!("Hello from your Teensy 4! The count is {count}");
-                if count % 7 == 0 {
+                if count.is_multiple_of(7) {
                     // log::warn!("Here's a warning at count {count}");
                 }
-                if count % 23 == 0 {
+                if count.is_multiple_of(23) {
                     // log::error!("Here's an error at count {count}");
                 }
 
@@ -179,14 +179,14 @@ mod app {
     }
 
     #[task(shared = [lora])]
-    async fn transmit_radio(mut cx: transmit_radio::Context, mut message: String<255>) {
+    async fn transmit_radio(mut cx: transmit_radio::Context, message: String<255>) {
             // The lora object is shared and thus needs to be locked
             // The rest of the syntax in the lock function is a lambda
             // that will execute an arbitrary message send
             cx.shared
                 .lora
                 .lock(|lora| {
-                    if let None = lora {
+                    if lora.is_none() {
                         log::error!("No LoRa object found!");
                     }
 
@@ -212,7 +212,7 @@ mod app {
     async fn listen_radio(mut cx: listen_radio::Context) {
         loop {
             cx.shared.lora.lock(|lora| {
-                if let None = lora {
+                if lora.is_none() {
                     log::error!("No LoRa object found!");
                     return;
                 }
