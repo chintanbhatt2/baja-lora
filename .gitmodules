@@ -1,0 +1,9 @@
+[submodule "teensy4-rs"]
+	path = teensy4-rs
+	url = https://github.com/chintanbhatt2/teensy4-rs
+[submodule "imxrt-ral"]
+	path = imxrt-ral
+	url = https://github.com/chintanbhatt2/imxrt-ral
+[submodule "imxrt-hal"]
+	path = imxrt-hal
+	url = https://github.com/chintanbhatt2/imxrt-hal

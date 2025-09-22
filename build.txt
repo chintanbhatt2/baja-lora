@@ -1,21 +1,21 @@
-// use std::process::Command;
-// use std::env;
+use std::process::Command;
+use std::env;
 
 // cargo objcopy --release -- -O ihex baja-lora.hex
 
-// fn main() {
-//    let target_dir = env::var("CARGO_TARGET_DIR")
-//         .unwrap_or_else(|_| format!("{}/release", env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string())));
+fn main() {
+   let target_dir = env::var("CARGO_TARGET_DIR")
+        .unwrap_or_else(|_| format!("{}/release", env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string())));
 
-//     let input_file = format!("{}/my_executable", target_dir);
+    let input_file = format!("{}/my_executable", target_dir);
 
-//     let status = Command::new("cargo")
-//         .args(["objcopy", "--release", "--", "-O", "ihex", "baja-lora.hex"])
-//         .status()
-//         .expect("failed to execute process");
+    let status = Command::new("cargo")
+        .args(["objcopy", "--release", "--", "-O", "ihex", "baja-lora.hex"])
+        .status()
+        .expect("failed to execute process");
 
-//     if !status.success() {
-//         panic!("objcopy failed");
-//     }
-//     println!("cargo:rerun-if-changed={}", input_file);
-// }
+    if !status.success() {
+        panic!("objcopy failed");
+    }
+    println!("cargo:rerun-if-changed={}", input_file);
+}
