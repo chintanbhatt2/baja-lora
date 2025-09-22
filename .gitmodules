@@ -1,0 +1,3 @@
+[submodule "teensy4-rs"]
+	path = teensy4-rs
+	url = ./teensy4-rs
