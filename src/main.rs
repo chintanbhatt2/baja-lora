@@ -12,6 +12,9 @@
 #![no_main]
 
 use teensy4_panic as _;
+mod can_types;
+
+use crate::can_types::CanMessage;
 
 #[rtic::app(device = teensy4_bsp, peripherals = true, dispatchers = [KPP])]
 mod app {
@@ -23,8 +26,10 @@ mod app {
         self as bsp,
         board::{self},
         hal::{
+            can::{Frame, MailboxData},
             gpio::Output,
             gpt::{self, Gpt},
+            iomuxc::usdhc::Data0,
             timer::Blocking,
         },
         pins::common,
@@ -35,6 +40,8 @@ mod app {
     use board::t40 as my_board;
 
     use rtic_monotonics::systick::{Systick, *};
+
+    use crate::can_types::CanMessage;
 
     /// There are no resources shared across tasks.
     #[shared]
@@ -84,7 +91,6 @@ mod app {
 
         let poller_connection = logging::log::usbd(usb, logging::Interrupts::Enabled);
 
-        
         // if let Err(e) = poller_connection {
         //     log::error!("Failed to set up USB logging: {:?}", e);
         //     let led = board::led(&mut gpio2, pins.p13);
@@ -101,7 +107,7 @@ mod app {
         //         },
         //     );
         // } else {
-            let poller: Option<Poller> = Some(poller_connection.unwrap());
+        let poller: Option<Poller> = Some(poller_connection.unwrap());
         // }
 
         // set up the can bus
@@ -140,10 +146,7 @@ mod app {
                 lora: Some(lora),
                 can,
             },
-            Local {
-                led: None,
-                poller,
-            },
+            Local { led: None, poller },
         )
     }
 
@@ -180,32 +183,29 @@ mod app {
 
     #[task(shared = [lora])]
     async fn transmit_radio(mut cx: transmit_radio::Context, message: String<255>) {
-            // The lora object is shared and thus needs to be locked
-            // The rest of the syntax in the lock function is a lambda
-            // that will execute an arbitrary message send
-            cx.shared
-                .lora
-                .lock(|lora| {
-                    if lora.is_none() {
-                        log::error!("No LoRa object found!");
-                    }
+        // The lora object is shared and thus needs to be locked
+        // The rest of the syntax in the lock function is a lambda
+        // that will execute an arbitrary message send
+        cx.shared.lora.lock(|lora| {
+            if lora.is_none() {
+                log::error!("No LoRa object found!");
+            }
 
-                    let lora = lora.as_mut().unwrap();
-                    let mut buffer = [0; 255];
-                    for (i, c) in message.chars().enumerate() {
-                        buffer[i] = c as u8;
-                    }
+            let lora = lora.as_mut().unwrap();
+            let mut buffer = [0; 255];
+            for (i, c) in message.chars().enumerate() {
+                buffer[i] = c as u8;
+            }
 
-                    match lora.transmit_payload(buffer, message.chars().count()) {
-                        Ok(_) => {
-                            log::info!("Sent message: {:?}", message);
-                        }
-                        Err(e) => {
-                            log::error!("Failed to send message: {:?}", e);
-                        }
-                    }
-
-                });
+            match lora.transmit_payload(buffer, message.chars().count()) {
+                Ok(_) => {
+                    log::info!("Sent message: {:?}", message);
+                }
+                Err(e) => {
+                    log::error!("Failed to send message: {:?}", e);
+                }
+            }
+        });
     }
 
     #[task(shared = [lora])]
@@ -250,13 +250,27 @@ mod app {
         loop {
             // read all available mailboxes for any available frames
             if let Some(data) = can.lock(|can| can.read_mailboxes()) {
-                log::info!("RX: MB{} - {:?}", data.mailbox_number, data.frame);
-                if let Ok(msg) = format!("RX: MB{} - {:?}", data.mailbox_number, data.frame) {
-                    let _ = transmit_radio::spawn(msg);
+                let a = CanMessage::new(data);
+                match a {
+                    Some(d) => {
+                        log::info!("{:?}", d);
+                    }
+                    None => {}
                 }
             }
 
-            Systick::delay(250.millis()).await;
+            Systick::delay(1.secs()).await;
         }
+    }
+
+    #[task(shared = [can])]
+    async fn run_can_tx(mut cx: run_can_tx::Context, data: Frame) {
+        cx.shared.can.lock(|can| {
+            let res = can.transmit(&data);
+            match res {
+                Ok(_) => {}
+                Err(_) => log::error!("Could not transmit CAN message"),
+            }
+        });
     }
 }
