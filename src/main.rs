@@ -16,10 +16,12 @@ mod can_types;
 
 use crate::can_types::CanMessage;
 
-#[rtic::app(device = teensy4_bsp, peripherals = true, dispatchers = [KPP])]
+#[rtic::app(device = teensy4_bsp, peripherals = true, dispatchers = [KPP, SAI1])]
 mod app {
+    use core::fmt::Error;
+
     use bsp::pins::t40::*;
-    use heapless::{format, String};
+    use heapless::{format, String, Vec};
     use imxrt_log::{self as logging, Poller};
     use sx127x_lora::LoRa;
     use teensy4_bsp::{
@@ -46,7 +48,7 @@ mod app {
     /// There are no resources shared across tasks.
     #[shared]
     struct Shared {
-        lora: Option<LoRa<board::Lpspi4, Output<P9>, Output<P6>, Blocking<Gpt<1>, GPT_FREQUENCY>>>,
+        lora: Option<LoRa<board::Lpspi4, Output<P6>, Output<P9>, Blocking<Gpt<1>, GPT_FREQUENCY>>>,
         can: board::Flexcan2,
     }
 
@@ -91,24 +93,13 @@ mod app {
 
         let poller_connection = logging::log::usbd(usb, logging::Interrupts::Enabled);
 
-        // if let Err(e) = poller_connection {
-        //     log::error!("Failed to set up USB logging: {:?}", e);
-        //     let led = board::led(&mut gpio2, pins.p13);
-        //     blink::spawn().unwrap();
-
-        //     return (
-        //         Shared {
-        //             lora: None,
-        //             flexcan2: None,
-        //         },
-        //         Local {
-        //             led: Some(led),
-        //             poller: None,
-        //         },
-        //     );
-        // } else {
-        let poller: Option<Poller> = Some(poller_connection.unwrap());
-        // }
+        // The teensy may not be connected to a serial port, and that's okay
+        let poller: Option<Poller>;
+        if let Ok(p) = poller_connection {
+            poller = Some(p);
+        } else {
+            poller = None;
+        }
 
         // set up the can bus
         let mut can = board::flexcan(flexcan2, pins.p1, pins.p0);
@@ -131,23 +122,27 @@ mod app {
         init_gpt(&mut gpt1);
 
         // These pins are the ones set up for the lora module
-        let reset = gpio2.output(pins.p6);
-        let cs = gpio2.output(pins.p9);
+        let reset = gpio2.output(pins.p9);
+        let cs = gpio2.output(pins.p6);
 
         let delay = Blocking::<_, GPT_FREQUENCY>::from_gpt(gpt1);
-        let lora = LoRa::new(lpspi4, cs, reset, 915, delay).unwrap();
+        let lora_res = LoRa::new(lpspi4, cs, reset, 915, delay);
+
+        let lora;
+
+        // in case the lora module can't be found, don't crash
+        if let Ok(l) = lora_res {
+            lora = Some(l);
+        } else {
+            lora = None;
+        }
 
         // Spawn tasks
         listen_radio::spawn().unwrap();
         run_can_rx::spawn().unwrap();
 
-        (
-            Shared {
-                lora: Some(lora),
-                can,
-            },
-            Local { led: None, poller },
-        )
+        // The LED pin is taken by the SPI module
+        (Shared { lora, can }, Local { led: None, poller })
     }
 
     // Keeping this in as sort of a debug function
@@ -181,7 +176,7 @@ mod app {
         }
     }
 
-    #[task(shared = [lora])]
+    #[task(shared = [lora], priority=11)]
     async fn transmit_radio(mut cx: transmit_radio::Context, message: String<255>) {
         // The lora object is shared and thus needs to be locked
         // The rest of the syntax in the lock function is a lambda
@@ -217,7 +212,7 @@ mod app {
                     return;
                 }
                 let lora = lora.as_mut().unwrap();
-                let poll = lora.poll_irq(Some(30));
+                let poll = lora.poll_irq(Some(1));
                 match poll {
                     Ok(size) => {
                         if let Ok(buffer) = lora.read_packet() {
@@ -249,21 +244,28 @@ mod app {
         let run_can_rx::SharedResources { mut can, .. } = cx.shared;
         loop {
             // read all available mailboxes for any available frames
-            if let Some(data) = can.lock(|can| can.read_mailboxes()) {
-                let a = CanMessage::new(data);
-                match a {
-                    Some(d) => {
-                        log::info!("{:?}", d);
+            let mut list: Vec<CanMessage, 255> = Vec::new();
+            while let Some(data) = can.lock(|can|  can.read_mailboxes()) {
+                if let Some(t) = CanMessage::new(data) {
+                    list.push(t);
+                    // msg.push_str(format!("{:?}", gpsmodule).unwrap().as_str());
                     }
-                    None => {}
                 }
+                
+                if !list.is_empty() {
+                    for x in list {
+                        let msg = format!("{:?}", x).unwrap();                    
+                        while let Err(_) = transmit_radio::spawn(msg.clone())
+                        {
+                            Systick::delay(10.micros()).await;
+                        }
+                    }
+                }
+                Systick::delay(1.millis()).await;
             }
-
-            Systick::delay(1.secs()).await;
         }
-    }
 
-    #[task(shared = [can])]
+    #[task(shared = [can])] 
     async fn run_can_tx(mut cx: run_can_tx::Context, data: Frame) {
         cx.shared.can.lock(|can| {
             let res = can.transmit(&data);
