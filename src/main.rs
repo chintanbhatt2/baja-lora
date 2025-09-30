@@ -218,7 +218,7 @@ mod app {
                         if let Ok(buffer) = lora.read_packet() {
                             let message =
                                 core::str::from_utf8(&buffer[..size]).unwrap_or("Invalid UTF-8");
-                            log::info!("Recieved Message: {}", message);
+                            log::info!("{}", message);
                         }
                     }
                     Err(err) => {

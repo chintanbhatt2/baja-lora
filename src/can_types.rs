@@ -1,10 +1,24 @@
+use core::fmt::Debug;
+
+use heapless::{format, String};
 use teensy4_bsp::hal::can::{Data, Frame, Id, MailboxData, StandardId};
 
-#[derive(Clone, Debug)]
+
+#[derive(Clone,)]
 pub enum CanMessage {
     Accelerometer(Accelerometer),
     Gyroscope(Gyroscope),
     GPS(GPSModule),
+}
+
+impl Debug for CanMessage {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Accelerometer(arg0) => arg0.fmt(f),
+            Self::Gyroscope(arg0) => arg0.fmt(f),
+            Self::GPS(arg0) => arg0.fmt(f),
+        }
+    }
 }
 
 impl CanMessage {
@@ -56,7 +70,7 @@ impl CanMessage {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Accelerometer {
     pub lateral: i16,
     pub longitudinal: i16,
@@ -77,7 +91,13 @@ impl Accelerometer {
     }
 }
 
-#[derive(Clone, Debug)]
+impl Debug for Accelerometer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_fmt(format_args!(">lat:{}\n>long:{}\n>vert:{}", &self.lateral, &self.longitudinal, &self.vertical))
+    }
+}
+
+#[derive(Clone)]
 pub struct Gyroscope {
     pub yaw: i16,
     pub pitch: i16,
@@ -97,6 +117,13 @@ impl Gyroscope {
         Some(packet)
     }
 }
+
+impl Debug for Gyroscope {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_fmt(format_args!(">yaw:{}\n>pitch:{}\n>roll:{}", &self.yaw, &self.pitch, &self.roll))
+    }
+}
+
 
 #[derive(Clone, Debug)]
 pub struct GPSModule {
@@ -141,4 +168,17 @@ impl Into<Data> for GPSModule {
             data.unwrap()
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct HallEffect {
+    pub engine_rpm: i16,
+    pub rr_wheel_rpm: i16,
+    pub trottle: i16,
+}
+
+
+pub trait TelePort {
+    fn to_teleport() -> String<255>;
+    fn from_teleport(msg: String<255>) -> Self;
 }
